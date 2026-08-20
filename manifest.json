@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.tyrichards.display-scanlines",
+  "name": "Display Scanlines",
+  "version": "1.0.0",
+  "author": "Ty Richards",
+  "description": "Display controls with integer-locked, resolution-aware CRT scanline presets",
+  "license": "MIT",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Display Scanlines",
+    "description": "Brightness, text size, scale, displays, and CRT scanline presets",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
