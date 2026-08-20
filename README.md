@@ -14,12 +14,12 @@ Omarchy’s Display panel with resolution-aware CRT scanline presets. It preserv
 
 | Preset | Character |
 |---|---|
-| **Light** | Subtle, all-day scanlines with no warmth or glow |
-| **Heavy** | Pitch-black gaps, warmer phosphors, deeper vignette, stronger saturation, and controlled glow |
+| **Light** | Subtle, all-day scanlines with no warmth |
+| **Heavy** | Darker gaps, warmer phosphors, deeper vignette, and stronger saturation |
 
 The power toggle unloads the shader without changing the selected preset. Light or Heavy can also be selected while power is off, and that choice is restored the next time the effect is enabled.
 
-Both presets use the same scanline pitch and `CONTRAST 0.34`. They differ in beam profile, color, blur, mask, warmth, vignette, and glow—not line size or midtone contrast.
+Both presets use the same scanline pitch and `CONTRAST 0.34`. They differ in beam profile, color, warmth, vignette, and saturation—not line size or midtone contrast.
 
 Everything from Omarchy’s stock Display panel continues to work:
 
@@ -51,6 +51,9 @@ Typical sine/UV scanlines can accumulate phase error and produce drifting line t
 
 | Output height | Pitch | Scanlines |
 |---:|---:|---:|
+| 720 | 4px | 180 |
+| 900 | 4px | 225 |
+| 1000 | 4px | 250 |
 | 1080 | 2px | 540 |
 | 1504 | 2px | 752 |
 | 1600 | 2px | 800 |
@@ -62,12 +65,13 @@ The shader resolves output dimensions independently on each render pass, so diff
 
 ## Image-quality details
 
-- **Linear-light processing:** samples use the exact piecewise sRGB transfer before beam, mask, blur, and glow calculations.
-- **Analytic brightness compensation:** average beam and phosphor-mask energy are normalized instead of using an arbitrary brightness fudge factor.
-- **Brightness-dependent beam width:** highlights bloom wider, like a real CRT.
-- **Asymmetric spot shape:** horizontal blur is wider than vertical blur to resemble a swept electron beam rather than generic soft focus.
-- **Controlled Heavy glow:** three weighted radii decay monotonically from 1.13px to 3.4px. This replaces a hollow 2.5–5px ring that looked halo-like.
-- **Static shader:** no `time` uniform, flicker, or rolling animation, so Hyprland damage tracking remains effective.
+- **Linear-light processing:** samples use the exact piecewise sRGB transfer before beam and color calculations.
+- **Color-stable scanlines:** no per-column RGB aperture mask, avoiding colored box ghosts on LCD subpixels, fractionally scaled UIs, browsers, and screenshots.
+- **Damage-safe sampling:** every output pixel reads only its matching source pixel. No spatial blur or glow crosses Hyprland damage rectangles, so moving UI cannot expose stale/background-colored boxes.
+- **Low-resolution legibility:** outputs at 1000 physical rows and below use half the old scanline count, with a wider Heavy beam that preserves three useful rows per 4px cell.
+- **Analytic brightness compensation:** average scanline-beam energy is normalized instead of using an arbitrary brightness fudge factor.
+- **Brightness-dependent beam width:** highlights use a wider beam, like a real CRT.
+- **Static shader:** no `time` uniform, flicker, or rolling animation, so Hyprland damage tracking and idle efficiency remain effective.
 
 ## Requirements
 

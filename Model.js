@@ -115,11 +115,13 @@ function parseDisplays(raw) {
 // scanlinePitch() in shaders/crt.body.glsl — the shader is authoritative for
 // rendering; this copy exists only so the panel can display the true pitch.
 //
-// The pitch depends only on the panel height: both active levels use the same
-// line size and differ in beam profile, colour and blur instead.
+// The pitch depends only on physical panel height. Displays at 1000px and
+// below use 4px spacing for half the previous scanline density and more
+// legible text; both presets otherwise share the same line spacing.
 function scanlinePitch(h) {
   h = Math.round(Number(h) || 0)
-  if (h <= 0) return 2
+  if (h <= 0) return 4
+  if (h <= 1000) return 4
 
   var target = Math.round(h / 720)
   target = Math.max(2, Math.min(4, target))

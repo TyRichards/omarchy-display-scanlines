@@ -4,8 +4,8 @@
 // This file is the shared shader BODY. It is not usable on its own: the
 // `display-scanlines` CLI prepends a preamble that supplies `#version 300 es`
 // and `#define CRT_LEVEL <1|2>` (1 = Light, 2 = Heavy), then writes
-// the result to the generated active shader. Keeping one body means the three
-// levels can never drift apart.
+// the result to the generated active shader. Keeping one body means the two
+// presets can never drift apart.
 //
 // Design notes (why this looks clean instead of moire-ridden):
 //
@@ -32,22 +32,22 @@
 //     edge. Selection is automatic and derived from panel height.
 //
 //  4. LIGHT IS MIXED IN LINEAR SPACE.
-//     Beam profile, mask, blur and glow are applied to linearized samples and
-//     then re-encoded. Doing this in gamma space is what makes most CRT
-//     shaders look muddy and dim; in linear light the highlights stay punchy
-//     and the brightness compensation below is physically meaningful.
+//     Beam and colour transforms are applied to a linearized source sample and
+//     then re-encoded. Doing this in gamma space is what makes most CRT shaders
+//     look muddy and dim; in linear light the highlights stay punchy and the
+//     brightness compensation below is physically meaningful.
 //
 //  5. BRIGHTNESS COMPENSATION IS ANALYTIC.
-//     Scanlines and the phosphor mask both remove light. Rather than guessing
-//     a fudge factor, the average beam weight over one cell and the average
-//     mask weight over one triad are summed exactly and divided back out, so
-//     the desktop keeps its intended luminance at any pitch.
+//     Scanlines remove light. Rather than guessing a fudge factor, the average
+//     beam weight over one cell is summed exactly and divided back out, so the
+//     desktop keeps its intended luminance at any pitch.
 //
-//  6. NO `time` UNIFORM ON PURPOSE.
-//     Hyprland only disables damage tracking for shaders that animate. This
-//     shader is static, so damage tracking keeps working and idle desktops
-//     cost no extra GPU or battery. That rules out flicker/rolling artifacts,
-//     which is the right trade for a display you actually work on.
+//  6. DAMAGE-SAFE AND STATIC.
+//     Every output pixel samples only its matching source pixel. Neighbouring
+//     texture taps conflict with Hyprland's partial-damage rectangles and can
+//     expose stale/background pixels as moving coloured boxes. Staying local
+//     keeps damage tracking correct; omitting `time` also keeps idle desktops
+//     from continuously redrawing.
 // ---------------------------------------------------------------------------
 
 precision highp float;
@@ -58,43 +58,33 @@ uniform sampler2D tex;
 layout(location = 0) out vec4 fragColor;
 
 // ============================ level parameters =============================
-// Three curated presets. Light is the subtle everyday setting; Heavy is an
+// Two curated presets. Light is the subtle everyday setting; Heavy is an
 // unapologetic novelty mode.
 
 // NOTE ON THE `USE_*` FLAGS BELOW:
 // The GLSL/C preprocessor evaluates `#if` using *integer* arithmetic only — a
-// float literal in a conditional is invalid and silently mis-evaluates rather
-// than erroring on some drivers. (`#if GLOW_STRENGTH > 0.0` originally
-// compiled but took the wrong branch, blowing the Heavy preset out to pure
-// white.) So every optional pass is gated on an explicit integer USE_* flag
-// and the float strength is only ever used in real GLSL code.
+// float literal in a conditional is invalid and can silently mis-evaluate on
+// some drivers. Every optional pass is therefore gated by an integer flag.
 
 #if CRT_LEVEL == 1
 // ---- LIGHT: subtle, all-day usable. --------------------------------------
 #define BEAM_MIN        0.34  // beam width in dark areas (cell units)
 #define BEAM_MAX        0.58  // beam width in bright areas
 #define SCANLINE_GAIN   0.94  // how fully scanlines are applied
-#define MASK_STRENGTH   0.28  // aperture-grille strength
-#define MASK_DIM        0.70  // non-native channel level within a triad
-#define BLUR_X          0.62  // beam spot size, physical px (horizontal)
-#define BLUR_Y          0.22  // ... and vertical (tight, like a real spot)
 #define CONTRAST        0.34  // S-curve strength around mid-grey
 #define SATURATION      1.12  // phosphors are more vivid than an LCD
 #define BRIGHTNESS      1.03  // final luminance trim
 #define VIGNETTE        0.10  // corner falloff
 #define WARMTH          0.00  // amber/phosphor tint
-#define GLOW_STRENGTH   0.00  // bloom
-#define USE_GLOW        0     // integer gates (see note above)
 #define USE_CONTRAST    1
 #define USE_SATURATION  1
 #define USE_WARMTH      0
-#define USE_MASK        1
 #define USE_VIGNETTE    1
 
 #else
-// ---- HEAVY: heavy-handed on purpose — glow, warm cast, deep vignette and
-// pitch-black gaps. Novelty mode. Uses the same fine scanline pitch as Light;
-// the intensity comes from everything except line size.
+// ---- HEAVY: heavy-handed on purpose — warm cast, deep vignette and
+// pitch-black gaps. Novelty mode. Uses the same scanline pitch as Light; the
+// intensity comes from everything except line size.
 // Beam width is what sets gap darkness, and it widens with content
 // brightness — so BEAM_MAX (bright content) is the lever for "pitch black",
 // not BEAM_MIN. At this 2px pitch, 0.24 puts the gap at 0.00/255 across the
@@ -102,29 +92,16 @@ layout(location = 0) out vec4 fragColor;
 #define BEAM_MIN        0.18  // pitch-black gaps
 #define BEAM_MAX        0.24  // ... at bright content too
 #define SCANLINE_GAIN   1.00
-#define MASK_STRENGTH   0.55
-#define MASK_DIM        0.42
-#define BLUR_X          0.72
-#define BLUR_Y          0.30  // kept proportional to BLUR_X (~0.41x)
 #define CONTRAST        0.34  // same as Light, by design
 #define SATURATION      1.32
 #define BRIGHTNESS      1.14
 #define VIGNETTE        0.46  // darker vignette frame
 #define WARMTH          0.26  // strong warm filter
-#define GLOW_STRENGTH   0.42  // glowy vibe
-#define USE_GLOW        1
 #define USE_CONTRAST    1
 #define USE_SATURATION  1
 #define USE_WARMTH      1
-#define USE_MASK        1
 #define USE_VIGNETTE    1
 #endif
-
-// Glow geometry. Only compiled when the level enables it.
-#define GLOW_RADIUS     3.4   // outermost glow radius in physical px
-#define GLOW_TAPS       12    // directions sampled around the source
-#define GLOW_RINGS      3     // radii per direction (see note in main)
-#define GLOW_THRESHOLD  0.34  // only light above this blooms
 
 // ---------------------------- color helpers --------------------------------
 
@@ -151,16 +128,20 @@ float luminance(vec3 c) {
 // -------------------------- pitch determination ----------------------------
 
 // Physical pixels per emulated scanline. Identical for both active levels —
-// they differ in beam profile, colour and blur, never in line size.
+// they differ in beam profile and colour treatment, never in line spacing.
 //
-// The target scales with panel height so the effect keeps a consistent apparent
-// size instead of vanishing on dense panels: ~2px up to 1440p, 3px at 4K, 4px
-// beyond. Then we search outward from the target for a pitch that divides the
-// height exactly, so the bottom cell isn't clipped.
+// Low-height displays need fewer, wider-spaced lines to keep desktop fonts
+// readable: 1000 physical rows and below use a fixed 4px pitch (250 lines at
+// 1000p, exactly half the old 2px/500-line density). Above that threshold the
+// target scales with panel height: ~2px through 1600p, 3px at 4K, and 4px
+// beyond. We prefer a pitch that divides the height exactly so the bottom cell
+// isn't clipped.
 //
 // Mirrored by scanlinePitch() in Model.js for the panel's readout — verified
 // to agree across 17 real panel heights.
 int scanlinePitch(int h) {
+    if (h <= 1000) return 4;
+
     int target = int(floor(float(h) / 720.0 + 0.5));
     target = clamp(target, 2, 4);
 
@@ -186,76 +167,21 @@ float beam(float d, float w) {
 
 void main() {
     ivec2 res = textureSize(tex, 0);
-    vec2 texel = 1.0 / vec2(res);
-
     int pitch = scanlinePitch(res.y);
 
-    // ---- sample the source with an asymmetric CRT beam spot ---------------
-    // 3x3 separable tap set weighted to smear horizontally, because a real
-    // CRT spot is stretched along the sweep. All taps are linearized before
-    // mixing so the blur is energy-correct.
-    vec3 lin = vec3(0.0);
-    float wsum = 0.0;
-
-    for (int y = -1; y <= 1; y++) {
-        for (int x = -1; x <= 1; x++) {
-            vec2 off = vec2(float(x) * BLUR_X, float(y) * BLUR_Y) * texel;
-            float wx = exp(-float(x * x) * 0.85);
-            float wy = exp(-float(y * y) * 2.60);
-            float w = wx * wy;
-            lin += srgbToLinear(texture(tex, v_texcoord + off).rgb) * w;
-            wsum += w;
-        }
-    }
-    lin /= wsum;
-
-    // ---- glow / bloom -----------------------------------------------------
-    // Ring of taps around the pixel; only light above GLOW_THRESHOLD blooms,
-    // so bright text and highlights halo while dark UI stays clean. Additive
-    // in linear space, which is how real phosphor bleed behaves.
-#if USE_GLOW
-    // Sample several radii per direction with a Gaussian weight that peaks at
-    // the source and decays outward.
-    //
-    // The previous version sampled only two fixed radii (5px and 2.5px) with
-    // the *outer* ring weighted lower but nothing at all sampled inside
-    // 2.5px. That left a hole in the middle of the bloom and parked its energy
-    // in a band a few pixels away from bright pixels — which is precisely what
-    // reads as a hard "halo" ring instead of a glow hugging the source.
-    // Grading the radii and weighting near taps highest gives a monotonically
-    // decaying falloff, so bright text gets a soft bleed rather than an
-    // outline.
-    vec3 glow = vec3(0.0);
-    float glowWsum = 0.0;
-    for (int i = 0; i < GLOW_TAPS; i++) {
-        float a = 6.2831853 * (float(i) + 0.5) / float(GLOW_TAPS);
-        vec2 dir = vec2(cos(a), sin(a));
-        for (int r = 1; r <= GLOW_RINGS; r++) {
-            float t = float(r) / float(GLOW_RINGS);       // 0..1 outward
-            float radius = GLOW_RADIUS * t;
-            float w = exp(-t * t * 2.2);                  // peaks near source
-            vec3 s = srgbToLinear(texture(tex, v_texcoord + dir * radius * texel).rgb);
-            glow += max(s - GLOW_THRESHOLD, vec3(0.0)) * w;
-            glowWsum += w;
-        }
-    }
-    glow /= max(glowWsum, 1e-4);
-    // Cap the added halo. Two reasons for a hard ceiling: a large near-white
-    // region sums enough over-threshold light to drive the frame into
-    // clipping (washed-out screen rather than a glow), and an additive bloom
-    // lifts *blacks* fastest in perceptual terms — uncapped, Heavy raised
-    // pure black to ~0.6 sRGB, turning the desktop grey. 0.12 linear keeps
-    // blacks near-black while still haloing bright text.
-    lin += min(glow * float(GLOW_STRENGTH), vec3(0.12));
-#endif
+    // ---- damage-safe source sample ---------------------------------------
+    // Never sample outside this fragment. Hyprland redraws partial damage
+    // rectangles and does not expand them for custom shader tap radii; blur or
+    // glow taps can therefore pull stale/background pixels across a damage
+    // boundary. One matching source sample keeps moving UI perfectly stable.
+    vec3 lin = srgbToLinear(texture(tex, v_texcoord).rgb);
 
     // ---- contrast + saturation (in linear light) -------------------------
 #if USE_CONTRAST
     {
         // Smoothstep S-curve pinned at 0 and 1, so pure black and pure white
-        // survive instead of being crushed. Clamped first because the glow
-        // pass above can push values past 1.0, and the raw cubic diverges
-        // hard outside [0,1] — that overshoot is what turned Heavy white.
+        // survive instead of being crushed. Clamping also keeps the cubic
+        // well-defined when a source surface arrives outside nominal range.
         vec3 c = clamp(lin, 0.0, 1.0);
         vec3 s = c * c * (3.0 - 2.0 * c);
         lin = mix(c, s, float(CONTRAST));
@@ -290,9 +216,12 @@ void main() {
     // Distance to the nearest beam centre, wrapped, in cell units.
     float d = min(o, 1.0 - o);
 
-    // Brighter content -> wider beam (highlight blooming).
+    // Brighter content -> wider beam (highlight blooming). At 1000 physical
+    // rows and below, pitch doubles to 4px; floor the beam width so even Heavy
+    // leaves three useful source rows around its single dark gap row.
     float lum = clamp(luminance(lin), 0.0, 1.0);
     float width = mix(float(BEAM_MIN), float(BEAM_MAX), lum);
+    if (res.y <= 1000) width = max(width, 0.34);
 
     float w = beam(d, width);
 
@@ -309,26 +238,11 @@ void main() {
     float scan = w / max(wAvg, 1e-4);
     lin *= mix(1.0, scan, float(SCANLINE_GAIN));
 
-    // ---- aperture grille mask --------------------------------------------
-#if USE_MASK
-    {
-        int col = int(gl_FragCoord.x);
-        int sub = col % 3;
-        if (sub < 0) sub += 3;
-
-        vec3 phosphor = vec3(float(MASK_DIM));
-        if (sub == 0) phosphor.r = 1.0;
-        else if (sub == 1) phosphor.g = 1.0;
-        else phosphor.b = 1.0;
-
-        vec3 mask = mix(vec3(1.0), phosphor, float(MASK_STRENGTH));
-        // Each channel is lit on 1 of 3 columns and dimmed on the other 2;
-        // divide the exact triad average back out to hold luminance.
-        float maskAvg = (1.0 + 2.0 * float(MASK_DIM)) / 3.0;
-        mask /= mix(1.0, maskAvg, float(MASK_STRENGTH));
-        lin *= mask;
-    }
-#endif
+    // Deliberately no per-column RGB aperture mask. A physical 3px RGB triad
+    // aliases against LCD subpixels, fractional display scaling, browser zoom,
+    // and screenshot resampling. That produces red/blue box ghosts around UI
+    // text instead of a stable CRT effect. Horizontal beam modulation supplies
+    // the scanline character without altering source hue from column to column.
 
     // ---- vignette ---------------------------------------------------------
 #if USE_VIGNETTE
