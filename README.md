@@ -6,7 +6,7 @@ Omarchy’s Display panel with resolution-aware CRT scanline presets. It preserv
   <img src="preview.png" alt="Display Scanlines main preview" width="100%">
 </p>
 
-> The root preview is the original lossless 1241×908 PNG, displayed responsively at full README width with no destructive resampling or JPEG conversion.
+> The root preview is the original lossless 1280×913 PNG, displayed responsively at full README width with no destructive resampling or JPEG conversion.
 
 ## Presets
 
