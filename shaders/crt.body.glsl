@@ -26,10 +26,11 @@
 //     cell is bit-identical to every other one. Consistency is guaranteed by
 //     integer arithmetic rather than hoped for.
 //
-//  3. PITCH PREFERS AN EXACT DIVISOR OF THE PANEL HEIGHT.
-//     Integer modulo already guarantees even lines; picking a pitch that
-//     divides the height also avoids a single truncated cell at the bottom
-//     edge. Selection is automatic and derived from panel height.
+//  3. PITCH IS ALWAYS EVEN.
+//     Odd cells cannot place a centre and gap symmetrically: the old 3px 4K
+//     profile became one bright row beside a two-row dark slab. The curated
+//     2px and 4px cells are symmetric in physical pixels and divide standard
+//     output heights exactly, including 3840x2160.
 //
 //  4. LIGHT IS MIXED IN LINEAR SPACE.
 //     Beam and colour transforms are applied to a linearized source sample and
@@ -71,8 +72,11 @@ layout(location = 0) out vec4 fragColor;
 #define BEAM_MIN        0.34  // beam width in dark areas (cell units)
 #define BEAM_MAX        0.58  // beam width in bright areas
 #define SCANLINE_GAIN   0.94  // how fully scanlines are applied
+#define WIDE_GAP        0.52  // source light retained in each 4px dark half
+#define FOUR_K_SOFTNESS 0.055 // damage-safe phosphor haze; no neighbour taps
+#define FOUR_K_NOTCH    0.035 // monochrome left-to-right phosphor texture
 #define CONTRAST        0.34  // S-curve strength around mid-grey
-#define SATURATION      1.12  // phosphors are more vivid than an LCD
+#define SATURATION      1.06  // restrained phosphor color lift
 #define BRIGHTNESS      1.03  // final luminance trim
 #define VIGNETTE        0.10  // corner falloff
 #define WARMTH          0.00  // amber/phosphor tint
@@ -87,13 +91,16 @@ layout(location = 0) out vec4 fragColor;
 // intensity comes from everything except line size.
 // Beam width is what sets gap darkness, and it widens with content
 // brightness — so BEAM_MAX (bright content) is the lever for "pitch black",
-// not BEAM_MIN. At this 2px pitch, 0.24 puts the gap at 0.00/255 across the
-// whole brightness range; the old 0.46 left it at ~115/255 (grey, not black).
-#define BEAM_MIN        0.18  // pitch-black gaps
+// not BEAM_MIN. At 2px, 0.24 keeps the gap black. The dedicated 4K profile
+// instead retains source light through two equally thick dark rows.
+#define BEAM_MIN        0.18  // pitch-black 2px gaps
 #define BEAM_MAX        0.24  // ... at bright content too
 #define SCANLINE_GAIN   1.00
+#define WIDE_GAP        0.28  // stronger but still translucent in 4px cells
+#define FOUR_K_SOFTNESS 0.070 // stronger damage-safe phosphor haze
+#define FOUR_K_NOTCH    0.055 // stronger monochrome phosphor texture
 #define CONTRAST        0.34  // same as Light, by design
-#define SATURATION      1.32
+#define SATURATION      1.18
 #define BRIGHTNESS      1.14
 #define VIGNETTE        0.46  // darker vignette frame
 #define WARMTH          0.26  // strong warm filter
@@ -131,29 +138,16 @@ float luminance(vec3 c) {
 // they differ in beam profile and colour treatment, never in line spacing.
 //
 // Low-height displays need fewer, wider-spaced lines to keep desktop fonts
-// readable: 1000 physical rows and below use a fixed 4px pitch (250 lines at
-// 1000p, exactly half the old 2px/500-line density). Above that threshold the
-// target scales with panel height: ~2px through 1600p, 3px at 4K, and 4px
-// beyond. We prefer a pitch that divides the height exactly so the bottom cell
-// isn't clipped.
+// readable: 1000 physical rows and below use a 4px pitch (250 lines at 1000p,
+// exactly half the old 2px/500-line density). Mid-density desktop panels use
+// a crisp 2px alternation. High-density outputs from 1800p upward return to a
+// symmetric 4px cell: 4K is exactly 540 identical cells, with none of the old
+// 3px profile's one-row/two-row imbalance.
 //
-// Mirrored by scanlinePitch() in Model.js for the panel's readout — verified
-// to agree across 17 real panel heights.
+// Mirrored by scanlinePitch() in Model.js for the panel's readout.
 int scanlinePitch(int h) {
-    if (h <= 1000) return 4;
-
-    int target = int(floor(float(h) / 720.0 + 0.5));
-    target = clamp(target, 2, 4);
-
-    for (int d = 0; d <= 2; d++) {
-        int up = target + d;
-        if (up <= 6 && h % up == 0) return up;
-        int down = target - d;
-        if (down >= 2 && h % down == 0) return down;
-    }
-    // Odd/prime heights: modulo still guarantees even lines, only the final
-    // partial cell differs, which is off-screen-edge invisible.
-    return target;
+    if (h <= 1000 || h >= 1800) return 4;
+    return 2;
 }
 
 // ------------------------------ beam profile -------------------------------
@@ -168,6 +162,9 @@ float beam(float d, float w) {
 void main() {
     ivec2 res = textureSize(tex, 0);
     int pitch = scanlinePitch(res.y);
+    // Keep the 2256x1504 Framework path untouched. These texture details are
+    // reserved for 4K-class landscape framebuffers (and larger).
+    bool isFourK = res.x >= 3000 && res.y >= 1800;
 
     // ---- damage-safe source sample ---------------------------------------
     // Never sample outside this fragment. Hyprland redraws partial damage
@@ -206,43 +203,70 @@ void main() {
     }
 #endif
 
+    // ---- 4K phosphor softness --------------------------------------------
+    // A custom Hyprland screen shader cannot safely perform spatial blur:
+    // neighbouring taps can cross partial-damage rectangles and expose stale
+    // pixels. Instead, gently lift only intermediate luminance toward its
+    // phosphor-like square-root response. Black and white stay pinned, while
+    // antialiased text edges lose a little LCD-hard acuity. This remains one
+    // matching source sample per output pixel.
+    if (isFourK) {
+        float l = max(luminance(lin), 0.0);
+        float softened = sqrt(l);
+        lin += vec3((softened - l) * float(FOUR_K_SOFTNESS));
+    }
+
     // ---- scanline beam ----------------------------------------------------
     // Phase from the integer physical row: exact, never drifts.
     int row = int(gl_FragCoord.y);
     int phase = row % pitch;
     if (phase < 0) phase += pitch; // defensive; row is never negative in practice
 
-    float o = float(phase) / float(pitch);
-    // Distance to the nearest beam centre, wrapped, in cell units.
-    float d = min(o, 1.0 - o);
+    float scan = 1.0;
 
-    // Brighter content -> wider beam (highlight blooming). At 1000 physical
-    // rows and below, pitch doubles to 4px; floor the beam width so even Heavy
-    // leaves three useful source rows around its single dark gap row.
-    float lum = clamp(luminance(lin), 0.0, 1.0);
-    float width = mix(float(BEAM_MIN), float(BEAM_MAX), lum);
-    if (res.y <= 1000) width = max(width, 0.34);
+    if (pitch == 4) {
+        // Every 4px cell is exactly two lit rows followed by two dark rows,
+        // regardless of resolution. WIDE_GAP keeps source detail visible in
+        // the dark half. Pairing the values around 1.0 preserves average beam
+        // energy analytically: (gap + (2-gap)) / 2 = 1.
+        float gap = float(WIDE_GAP);
+        scan = phase < (pitch / 2) ? 2.0 - gap : gap;
+    } else {
+        // The Framework profile is already physically 50/50: one lit row and
+        // one dark row. Preserve its exact brightness-dependent beam shape.
+        float o = float(phase) / float(pitch);
+        float d = min(o, 1.0 - o);
+        float lum = clamp(luminance(lin), 0.0, 1.0);
+        float width = mix(float(BEAM_MIN), float(BEAM_MAX), lum);
+        float w = beam(d, width);
 
-    float w = beam(d, width);
-
-    // Analytic normalisation: average beam weight across one whole cell, so
-    // average luminance is preserved regardless of pitch or beam width.
-    float wAvg = 0.0;
-    for (int i = 0; i < 6; i++) {
-        if (i >= pitch) break;
-        float oi = float(i) / float(pitch);
-        wAvg += beam(min(oi, 1.0 - oi), width);
+        // Analytic normalisation across the two-row cell.
+        float wAvg = 0.0;
+        for (int i = 0; i < 2; i++) {
+            float oi = float(i) / float(pitch);
+            wAvg += beam(min(oi, 1.0 - oi), width);
+        }
+        wAvg /= float(pitch);
+        scan = w / max(wAvg, 1e-4);
     }
-    wAvg /= float(pitch);
 
-    float scan = w / max(wAvg, 1e-4);
     lin *= mix(1.0, scan, float(SCANLINE_GAIN));
 
-    // Deliberately no per-column RGB aperture mask. A physical 3px RGB triad
-    // aliases against LCD subpixels, fractional display scaling, browser zoom,
-    // and screenshot resampling. That produces red/blue box ghosts around UI
-    // text instead of a stable CRT effect. Horizontal beam modulation supplies
-    // the scanline character without altering source hue from column to column.
+    // ---- 4K horizontal notch texture -------------------------------------
+    // Reintroduce the incremental left-to-right phosphor rhythm at 4K without
+    // the old RGB aperture mask. Three monochrome column steps have an exact
+    // average of 1.0, retain source hue, and require no additional samples.
+    // The physical-pixel phase is static and integer-locked like the rows.
+    if (isFourK) {
+        int sub = int(gl_FragCoord.x) % 3;
+        if (sub < 0) sub += 3;
+        float ramp = 1.0 - float(sub); // +1, 0, -1 from left to right
+        lin *= 1.0 + ramp * float(FOUR_K_NOTCH);
+    }
+
+    // Deliberately no per-column RGB aperture mask. Its channel-specific
+    // triads caused colored box ghosts on LCD subpixels and scaled content;
+    // the 4K monochrome notches above restore texture without hue artifacts.
 
     // ---- vignette ---------------------------------------------------------
 #if USE_VIGNETTE

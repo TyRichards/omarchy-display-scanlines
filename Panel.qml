@@ -221,24 +221,6 @@ Panel {
     if (selectedIndex < 0) selectedIndex = 0
   }
 
-  // Keep the keyboard-focused row inside the viewport when the panel grows
-  // taller than its allotted height (lots of displays). Mirrors audio's
-  // ensureCursorVisible helper.
-  function ensureCursorVisible(item) {
-    if (!item || !scrollArea) return
-    var flick = scrollArea.contentItem
-    if (!flick || flick.contentY === undefined) return
-    var pt = item.mapToItem(flick.contentItem || flick, 0, 0)
-    var top = pt.y
-    var bottom = top + (item.height || 0)
-    var viewTop = flick.contentY
-    var viewBottom = viewTop + flick.height
-    var margin = 6
-    if (top < viewTop + margin) flick.contentY = Math.max(0, top - margin)
-    else if (bottom > viewBottom - margin)
-      flick.contentY = bottom + margin - flick.height
-  }
-
   function brightnessIpc(percent) {
     var value = Number(percent)
     root.setBrightness(value)
@@ -624,7 +606,9 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(panelColumn.implicitHeight, Style.space(560))
+    // This control panel is one locked sheet, not a scrollable viewport.
+    // Let it claim its complete natural height so every section stays fixed.
+    contentHeight: panelColumn.implicitHeight
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -643,21 +627,13 @@ Panel {
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
-      ScrollView {
-        id: scrollArea
+      Item {
+        id: contentArea
         anchors.fill: parent
-        clip: true
-        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-        ScrollBar.vertical.policy: panelColumn.implicitHeight > height ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
-        Binding {
-          target: scrollArea.contentItem
-          property: "interactive"
-          value: panelColumn.implicitHeight > scrollArea.height
-        }
 
         Column {
           id: panelColumn
-          width: scrollArea.availableWidth
+          width: contentArea.width
           spacing: Style.space(14)
 
           // ---------- Hero: display icon · title/status ----------
@@ -754,7 +730,6 @@ Panel {
               width: parent.width
               height: brightnessSlider.implicitHeight + Style.spacing.controlGap
               hasCursor: root.cursorActive && root.focusSection === "brightness" && root.selectedIndex === -1
-              onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(brightnessRow)
               foreground: root.bar.foreground
               outline: true
 
@@ -828,7 +803,6 @@ Panel {
               width: parent.width
               height: textSizeSlider.implicitHeight + Style.spacing.controlGap
               hasCursor: root.cursorActive && root.focusSection === "textsize" && root.selectedIndex === -1
-              onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(textSizeRow)
               foreground: root.bar.foreground
               outline: true
 
@@ -1122,7 +1096,6 @@ Panel {
     readonly property bool canToggle: display && (!display.enabled || root.enabledDisplayCount > 1)
 
     hasCursor: root.cursorActive && root.focusSection === "monitors" && root.selectedIndex === rowIndex
-    onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(monitorRow)
     current: isFocused
     foreground: root.bar.foreground
     fill: Style.hoverFillFor(root.bar.foreground, Color.accent)

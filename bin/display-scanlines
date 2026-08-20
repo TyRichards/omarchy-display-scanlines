@@ -19,6 +19,7 @@ set -euo pipefail
 
 plugin_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 body="$plugin_dir/shaders/crt.body.glsl"
+passthrough="$plugin_dir/shaders/passthrough.frag"
 
 state_home=${XDG_STATE_HOME:-$HOME/.local/state}
 gen_dir="$state_home/omarchy/display-scanlines"
@@ -131,7 +132,15 @@ generate() {
 }
 
 apply_shader() {
-  hyprctl eval "hl.config({ decoration = { screen_shader = $(lua_quote "$1") } })" >/dev/null
+  local shader
+  shader=$(lua_quote "$1")
+
+  # hl.config() schedules property refresh asynchronously. If the command
+  # returns before that refresh, old shader rows can survive in partially
+  # damaged scan-out buffers until a workspace switch forces a full redraw.
+  # Hyprland 0.56+ exposes the precise flush hook: it reloads the shader now
+  # and schedules two full output frames. Keep the guard for older releases.
+  hyprctl eval "hl.config({ decoration = { screen_shader = $shader } }); if hl.exec_scheduled_prop_refresh_immediately ~= nil then hl.exec_scheduled_prop_refresh_immediately() end" >/dev/null
 }
 
 write_toggle() {
@@ -154,10 +163,23 @@ enable_shader() {
 }
 
 disable_shader() {
+  local was_enabled=false
+  if is_enabled; then was_enabled=true; fi
+
   # Persist the active preset before unloading when upgrading from an old state
   # that had no separate preset file.
   save_preset "$(read_preset)"
   rm -f "$toggle_file"
+
+  if [[ $was_enabled == true && -f $passthrough ]]; then
+    # First replace the visible CRT pass with a neutral one. The immediate
+    # refresh schedules two full frames; 50ms lets both present even at 60Hz
+    # (and five can present on a 100Hz output) before the pipeline is removed.
+    # Passthrough and no shader look identical, so the second handoff is clean.
+    apply_shader "$passthrough"
+    sleep 0.05
+  fi
+
   apply_shader ""
 }
 

@@ -115,24 +115,14 @@ function parseDisplays(raw) {
 // scanlinePitch() in shaders/crt.body.glsl — the shader is authoritative for
 // rendering; this copy exists only so the panel can display the true pitch.
 //
-// The pitch depends only on physical panel height. Displays at 1000px and
-// below use 4px spacing for half the previous scanline density and more
-// legible text; both presets otherwise share the same line spacing.
+// The pitch depends only on physical panel height. Low-height displays use
+// 4px spacing for legibility, mid-density panels use a crisp 2px alternation,
+// and 1800p+ outputs use a symmetric 4px cell. Even pitches avoid the old 4K
+// profile's asymmetric one-row/two-row bands.
 function scanlinePitch(h) {
   h = Math.round(Number(h) || 0)
-  if (h <= 0) return 4
-  if (h <= 1000) return 4
-
-  var target = Math.round(h / 720)
-  target = Math.max(2, Math.min(4, target))
-
-  for (var d = 0; d <= 2; d++) {
-    var up = target + d
-    if (up <= 6 && h % up === 0) return up
-    var down = target - d
-    if (down >= 2 && h % down === 0) return down
-  }
-  return target
+  if (h <= 1000 || h >= 1800) return 4
+  return 2
 }
 
 if (typeof module !== "undefined") {
