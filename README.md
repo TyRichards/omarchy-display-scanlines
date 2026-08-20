@@ -6,7 +6,7 @@ Omarchy’s Display panel with resolution-aware CRT scanline presets. It preserv
   <img src="preview.png" alt="Display Scanlines main preview" width="100%">
 </p>
 
-> The root preview is the original lossless 1334×920 PNG, displayed responsively at full README width with no destructive resampling or JPEG conversion.
+> The root preview is the original lossless 1241×908 PNG, displayed responsively at full README width with no destructive resampling or JPEG conversion.
 
 ## Presets
 
@@ -27,10 +27,14 @@ Everything from Omarchy’s stock Display panel continues to work:
 - Multi-monitor enable/disable controls
 - Scroll-wheel brightness adjustment and OSD
 
-## Full-desktop preview
+## Additional previews
 
 <p align="center">
-  <img src="screenshots/display-panel.png" alt="Display Scanlines panel across the full Omarchy desktop" width="100%">
+  <img src="screenshots/terminal.png" alt="CRT scanlines across a terminal music visualizer" width="100%">
+</p>
+
+<p align="center">
+  <img src="screenshots/desktop.png" alt="Display Scanlines panel across the full Omarchy desktop" width="100%">
 </p>
 
 ## Why the scanlines stay even
