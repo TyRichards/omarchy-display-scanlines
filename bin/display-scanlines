@@ -132,15 +132,23 @@ generate() {
 }
 
 apply_shader() {
-  local shader
+  local shader rounding
   shader=$(lua_quote "$1")
+  rounding=$(hyprctl getoption decoration:rounding 2>/dev/null | sed -n 's/^int:[[:space:]]*//p' | head -n1)
+  [[ $rounding =~ ^[0-9]+$ ]] || {
+    echo "display-scanlines: could not read decoration:rounding" >&2
+    return 1
+  }
 
-  # hl.config() schedules property refresh asynchronously. If the command
-  # returns before that refresh, old shader rows can survive in partially
-  # damaged scan-out buffers until a workspace switch forces a full redraw.
-  # Hyprland 0.56+ exposes the precise flush hook: it reloads the shader now
-  # and schedules two full output frames. Keep the guard for older releases.
-  hyprctl eval "hl.config({ decoration = { screen_shader = $shader } }); if hl.exec_scheduled_prop_refresh_immediately ~= nil then hl.exec_scheduled_prop_refresh_immediately() end" >/dev/null
+  # A screen-shader refresh alone forces two frames but does not add full
+  # monitor damage in Hyprland 0.56. Wallpaper and layer-surface buffers can
+  # consequently alternate stale history while ordinary windows stay stable.
+  # Re-applying the current rounding value is visually neutral and trips the
+  # window-state refresh path, which explicitly damages every monitor. Flush
+  # both scheduled refreshes together so each shader handoff gets clean full
+  # output frames. An empty shader still destroys the final program, leaving
+  # Off with no continuing shader cost.
+  hyprctl eval "hl.config({ decoration = { screen_shader = $shader, rounding = $rounding } }); if hl.exec_scheduled_prop_refresh_immediately ~= nil then hl.exec_scheduled_prop_refresh_immediately() end" >/dev/null
 }
 
 write_toggle() {

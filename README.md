@@ -17,7 +17,7 @@ Omarchy’s Display panel with resolution-aware CRT scanline presets. It preserv
 | **Light** | Subtle, all-day scanlines with no warmth |
 | **Heavy** | Darker gaps, warmer phosphors, deeper vignette, and stronger saturation |
 
-The power toggle unloads the shader without changing the selected preset. Light or Heavy can also be selected while power is off, and that choice is restored the next time the effect is enabled. When switching off, the plugin first presents a neutral passthrough shader for multiple full frames, then unloads the visually identical pipeline. Hyprland’s scheduled shader refresh is flushed at each handoff to prevent stale scanline rows.
+The power toggle unloads the shader without changing the selected preset. Light or Heavy can also be selected while power is off, and that choice is restored the next time the effect is enabled. When switching off, the plugin first presents a neutral passthrough shader for multiple full frames, then unloads the visually identical pipeline. Each handoff also triggers Hyprland’s full monitor-damage path—not only its screen-shader refresh—so wallpaper and layer surfaces such as the top bar cannot alternate stale buffers. Once Off, no shader remains loaded.
 
 Both presets use the same scanline pitch and `CONTRAST 0.34`. They differ in beam profile, color, warmth, vignette, saturation, and the strength of 4K phosphor texture—not line size or midtone contrast.
 
@@ -74,6 +74,7 @@ The shader resolves output dimensions independently on each render pass, so diff
 - **Resolution-independent 50/50 bands:** every 2px cell is one lit plus one dark row; every 4px cell is two lit plus two translucent-dark rows.
 - **Analytic brightness compensation:** average scanline-beam energy is normalized instead of using an arbitrary brightness fudge factor.
 - **Brightness-dependent beam width:** highlights use a wider beam, like a real CRT.
+- **Clean zero-cost Off:** power transitions repaint the complete output through a neutral handoff before genuinely unloading the shader, preventing layer/background strobe without leaving an identity shader running.
 - **Static shader:** no `time` uniform, flicker, or rolling animation, so Hyprland damage tracking and idle efficiency remain effective.
 
 ## Requirements

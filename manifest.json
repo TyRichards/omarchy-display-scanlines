@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.tyrichards.display-scanlines",
   "name": "Display Scanlines",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "author": "Ty Richards",
   "description": "Display controls with integer-locked, resolution-aware CRT scanline presets",
   "license": "MIT",
