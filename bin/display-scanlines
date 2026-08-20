@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
-# Display Scanlines — CRT scanline shader control.
+# Display Scanlines — independent power and preset control.
 #
 # Usage:
-#   display-scanlines off | light | heavy
-#   display-scanlines cycle      # off -> light -> heavy -> off
-#   display-scanlines status     # {"level":"light","enabled":true,...}
+#   display-scanlines on | off | toggle
+#   display-scanlines light | heavy      # select preset; preserve power state
+#   display-scanlines status             # {"level":"light","enabled":false,...}
 #
-# The two active levels share one shader body (shaders/crt.body.glsl); this
-# script composes it with a `#define CRT_LEVEL n` preamble into a generated
-# file, so the levels can never drift out of sync. The shader itself discovers
-# each output's physical resolution at runtime with textureSize(), so there is
-# nothing resolution-specific to compute here and nothing to regenerate on
-# hotplug, mode change, or scale change.
+# Light/Heavy is persistent preference, independent of enabled/disabled state.
+# Selecting a preset while off does not enable the shader; the next `on` or
+# `toggle` reapplies that preset. Selecting a preset while on applies it now.
 #
-# Applies immediately via `hyprctl eval` and persists across Hyprland reloads
-# and logins via a flag module in Omarchy's toggles directory.
+# The two presets share one shader body (shaders/crt.body.glsl). This script
+# prepends a CRT_LEVEL define into a generated file. The shader discovers each
+# output's physical resolution at runtime, so display hotplug, resolution, and
+# scale changes require no regeneration.
 
 set -euo pipefail
 
@@ -23,27 +22,26 @@ body="$plugin_dir/shaders/crt.body.glsl"
 
 state_home=${XDG_STATE_HOME:-$HOME/.local/state}
 gen_dir="$state_home/omarchy/display-scanlines"
+preset_file="$gen_dir/preset"
 toggle_file="$state_home/omarchy/toggles/hypr/zz-display-scanlines.lua"
-
-LEVELS=(off light heavy)
 
 level_number() {
   case $1 in
   light) echo 1 ;;
   heavy) echo 2 ;;
-  *) echo 0 ;;
+  *) return 1 ;;
   esac
 }
 
-# "medium" was removed. Anything still pointing at it — a live Hyprland shader
-# path, the persisted toggle file, or a stale command — resolves to heavy so it
-# degrades to the nearest surviving level instead of a missing-shader error.
 normalize_level() {
-  if [[ $1 == medium ]]; then echo heavy; else echo "$1"; fi
+  case $1 in
+  light | heavy) echo "$1" ;;
+  medium) echo heavy ;; # removed preset; nearest surviving match
+  *) return 1 ;;
+  esac
 }
 
 lua_quote() {
-  # Single-quoted Lua string with embedded quotes/backslashes escaped.
   local s=$1
   s=${s//\\/\\\\}
   s=${s//\'/\\\'}
@@ -59,35 +57,58 @@ current_shader() {
     sed -n 's/^str:[[:space:]]*//p' | head -n1
 }
 
-# Current level is derived from the shader Hyprland actually has loaded, so an
-# external change or a fresh login reports honestly.
-current_level() {
-  local cur
-  cur=$(current_shader)
-  [[ -z $cur ]] && {
-    echo off
-    return
-  }
-  local lvl
-  for lvl in light heavy; do
-    if [[ $cur == "$(shader_path_for "$lvl")" ]]; then
-      echo "$lvl"
-      return
-    fi
-  done
-  # A session still running the removed medium shader reports as heavy, so
-  # `cycle` advances from the right place instead of restarting at off.
-  if [[ $cur == "$(shader_path_for medium)" ]]; then
-    echo heavy
-    return
-  fi
-  echo off
+preset_from_shader() {
+  local cur=${1:-$(current_shader)}
+  case $cur in
+  "$(shader_path_for light)") echo light ;;
+  "$(shader_path_for heavy)" | "$(shader_path_for medium)") echo heavy ;;
+  *) return 1 ;;
+  esac
 }
 
-# Compose the level's shader from the shared body. Regenerated on every apply
-# so edits to the body take effect without a manual cleanup step.
+# Read persisted preference. For upgrades from the old combined-state design,
+# recover the active preset from Hyprland or the toggle module before falling
+# back to Light.
+read_preset() {
+  local level=""
+
+  if [[ -f $preset_file ]]; then
+    level=$(normalize_level "$(tr -d '[:space:]' <"$preset_file")" 2>/dev/null || true)
+  fi
+
+  if [[ -z $level ]]; then
+    level=$(preset_from_shader 2>/dev/null || true)
+  fi
+
+  if [[ -z $level && -f $toggle_file ]]; then
+    if grep -q 'crt-heavy\.frag\|crt-medium\.frag' "$toggle_file"; then
+      level=heavy
+    elif grep -q 'crt-light\.frag' "$toggle_file"; then
+      level=light
+    fi
+  fi
+
+  printf '%s\n' "${level:-light}"
+}
+
+save_preset() {
+  local level
+  level=$(normalize_level "$1")
+  mkdir -p "$gen_dir"
+  printf '%s\n' "$level" >"$preset_file.tmp"
+  mv -f "$preset_file.tmp" "$preset_file"
+  rm -f "$gen_dir/crt-medium.frag"
+}
+
+is_enabled() {
+  preset_from_shader >/dev/null 2>&1
+}
+
+# Compose the selected preset's shader from the shared body. Regenerated on
+# every apply so source edits land without a cleanup step.
 generate() {
-  local level=$1 num out
+  local level num out
+  level=$(normalize_level "$1")
   num=$(level_number "$level")
   out=$(shader_path_for "$level")
 
@@ -100,7 +121,7 @@ generate() {
   {
     echo "#version 300 es"
     echo "// GENERATED by display-scanlines from shaders/crt.body.glsl — do not edit."
-    echo "// Edit the body instead; this file is rebuilt on every apply."
+    echo "// Edit the body instead; this file is rebuilt whenever applied."
     echo "#define CRT_LEVEL $num"
     cat "$body"
   } >"$out.tmp"
@@ -113,48 +134,61 @@ apply_shader() {
   hyprctl eval "hl.config({ decoration = { screen_shader = $(lua_quote "$1") } })" >/dev/null
 }
 
-set_level() {
-  local level
-  level=$(normalize_level "$1")
-
-  if [[ $level == off ]]; then
-    rm -f "$toggle_file"
-    apply_shader ""
-    return
-  fi
-
-  local shader
-  shader=$(generate "$level")
-
+write_toggle() {
+  local level=$1 shader=$2
   mkdir -p "$(dirname "$toggle_file")"
   cat >"$toggle_file" <<EOF
--- Managed by display-scanlines (level: $level).
--- Run \`display-scanlines off\` to disable, or delete this file.
+-- Managed by display-scanlines (preset: $level).
+-- Run \`display-scanlines off\` to disable; preset preference remains saved.
 hl.config({ decoration = { screen_shader = $(lua_quote "$shader") } })
 EOF
+}
 
+enable_shader() {
+  local level shader
+  level=$(read_preset)
+  save_preset "$level"
+  shader=$(generate "$level")
+  write_toggle "$level" "$shader"
   apply_shader "$shader"
 }
 
-cycle() {
-  local cur next i
-  cur=$(current_level)
-  for i in "${!LEVELS[@]}"; do
-    if [[ ${LEVELS[$i]} == "$cur" ]]; then
-      next=${LEVELS[$(((i + 1) % ${#LEVELS[@]}))]}
-      set_level "$next"
-      printf '%s\n' "$next"
-      return
-    fi
-  done
-  set_level light
-  echo light
+disable_shader() {
+  # Persist the active preset before unloading when upgrading from an old state
+  # that had no separate preset file.
+  save_preset "$(read_preset)"
+  rm -f "$toggle_file"
+  apply_shader ""
+}
+
+set_preset() {
+  local level enabled=false shader
+  level=$(normalize_level "$1")
+  if is_enabled; then enabled=true; fi
+
+  save_preset "$level"
+  shader=$(generate "$level")
+
+  if [[ $enabled == true ]]; then
+    write_toggle "$level" "$shader"
+    apply_shader "$shader"
+  fi
+}
+
+toggle_shader() {
+  if is_enabled; then
+    disable_shader
+    echo off
+  else
+    enable_shader
+    echo on
+  fi
 }
 
 status_json() {
-  local level enabled
-  level=$(current_level)
-  if [[ $level == off ]]; then enabled=false; else enabled=true; fi
+  local level enabled=false
+  level=$(read_preset)
+  if is_enabled; then enabled=true; fi
 
   if command -v jq >/dev/null 2>&1; then
     jq -cn --arg level "$level" --argjson enabled "$enabled" \
@@ -166,13 +200,15 @@ status_json() {
   fi
 }
 
-case ${1:-cycle} in
-off | light | heavy) set_level "$1" ;;
-medium) set_level heavy ;; # removed level; nearest surviving match
-cycle | toggle) cycle ;;
+case ${1:-toggle} in
+on) enable_shader ;;
+off) disable_shader ;;
+toggle | cycle) toggle_shader ;; # cycle retained as a backwards-compatible alias
+light | heavy) set_preset "$1" ;;
+medium) set_preset heavy ;; # removed preset; nearest surviving match
 status | --status) status_json ;;
 *)
-  echo "usage: display-scanlines [off|light|heavy|cycle|status]" >&2
+  echo "usage: display-scanlines [on|off|toggle|light|heavy|status]" >&2
   exit 2
   ;;
 esac

@@ -1,22 +1,23 @@
 # Display Scanlines
 
-Omarchy’s Display panel with resolution-aware CRT scanline presets. It preserves the stock brightness, text-size, display-scale, and monitor controls, then adds a **󰯉 CRT Scanlines** selector with **Off**, **Light**, and **Heavy** modes.
+Omarchy’s Display panel with resolution-aware CRT scanline presets. It preserves the stock brightness, text-size, display-scale, and monitor controls, then adds a **󰯉 CRT Scanlines** power toggle with **Light** and **Heavy** presets.
 
 <p align="center">
   <img src="preview.png" alt="Display Scanlines main preview" width="100%">
 </p>
 
-> The root preview is an exact, lossless 2× enlargement of the original PNG. It uses nearest-neighbor pixel replication—no interpolation, smoothing, JPEG conversion, or added blur. A 50% inverse resize reproduces the source with zero differing pixels.
+> The root preview is the original lossless 1334×920 PNG, displayed responsively at full README width with no destructive resampling or JPEG conversion.
 
 ## Presets
 
 | Preset | Character |
 |---|---|
-| **Off** | Unloads the screen shader entirely |
 | **Light** | Subtle, all-day scanlines with no warmth or glow |
 | **Heavy** | Pitch-black gaps, warmer phosphors, deeper vignette, stronger saturation, and controlled glow |
 
-Both active presets use the same scanline pitch and `CONTRAST 0.34`. They differ in beam profile, color, blur, mask, warmth, vignette, and glow—not line size or midtone contrast.
+The power toggle unloads the shader without changing the selected preset. Light or Heavy can also be selected while power is off, and that choice is restored the next time the effect is enabled.
+
+Both presets use the same scanline pitch and `CONTRAST 0.34`. They differ in beam profile, color, blur, mask, warmth, vignette, and glow—not line size or midtone contrast.
 
 Everything from Omarchy’s stock Display panel continues to work:
 
@@ -29,7 +30,7 @@ Everything from Omarchy’s stock Display panel continues to work:
 ## Full-desktop preview
 
 <p align="center">
-  <img src="screenshots/desktop.png" alt="Display Scanlines across the full Omarchy desktop" width="100%">
+  <img src="screenshots/display-panel.png" alt="Display Scanlines panel across the full Omarchy desktop" width="100%">
 </p>
 
 ## Why the scanlines stay even
@@ -68,7 +69,7 @@ The shader resolves output dimensions independently on each render pass, so diff
 - Hyprland with Lua configuration and `decoration.screen_shader` support
 - No external packages, elevated privileges, or install hooks
 
-The plugin invokes only Omarchy/Hyprland commands already present on an Omarchy system. Selecting a preset writes generated shader state beneath `~/.local/state/omarchy/`; it does not overwrite user configuration.
+The plugin invokes only Omarchy/Hyprland commands already present on an Omarchy system. Power and preset state are stored beneath `~/.local/state/omarchy/`; the plugin does not overwrite user configuration.
 
 ## Install
 
@@ -92,53 +93,57 @@ omarchy bar move io.github.tyrichards.display-scanlines --section right
 
 ## Use
 
-Click **Off**, **Light**, or **Heavy** at the bottom of the Display panel.
+Use the switch at the bottom of the Display panel to turn scanlines on or off. Click **Light** or **Heavy** to select the preset independently; the selected button remains active while power is off.
 
-The bundled CLI can also control the effect:
+The bundled CLI can also control power and preset separately:
 
 ```sh
+~/.config/omarchy/plugins/io.github.tyrichards.display-scanlines/bin/display-scanlines on
 ~/.config/omarchy/plugins/io.github.tyrichards.display-scanlines/bin/display-scanlines off
+~/.config/omarchy/plugins/io.github.tyrichards.display-scanlines/bin/display-scanlines toggle
 ~/.config/omarchy/plugins/io.github.tyrichards.display-scanlines/bin/display-scanlines light
 ~/.config/omarchy/plugins/io.github.tyrichards.display-scanlines/bin/display-scanlines heavy
-~/.config/omarchy/plugins/io.github.tyrichards.display-scanlines/bin/display-scanlines cycle
 ~/.config/omarchy/plugins/io.github.tyrichards.display-scanlines/bin/display-scanlines status
 ```
 
 Shell IPC is available as well:
 
 ```sh
+omarchy-shell display-scanlines crt toggle
 omarchy-shell display-scanlines crt light
-omarchy-shell display-scanlines crt cycle
+omarchy-shell display-scanlines crt heavy
 omarchy-shell display-scanlines state
 ```
 
 ### Optional keybinding
 
-`SUPER + CTRL + MINUS` makes a fitting cycle shortcut—the minus key is the scanline:
+`SUPER + CTRL + MINUS` makes a fitting power shortcut—the minus key is the scanline. It toggles the effect without changing the saved Light/Heavy preset:
 
 ```lua
 -- This chord is declared upstream as code:20, so unbind that exact form.
 hl.unbind("SUPER + CTRL + code:20")
-o.bind("SUPER + CTRL + code:20", "CRT scanlines", "omarchy-shell -q display-scanlines crt cycle")
+o.bind("SUPER + CTRL + code:20", "Toggle CRT scanlines", "omarchy-shell -q display-scanlines crt toggle")
 ```
 
 This replaces Omarchy’s default **Expand window left a lot** binding.
 
 ## Persistence and generated files
 
-The selected preset persists across `hyprctl reload` and login through:
+The selected Light/Heavy preset is saved independently of power in:
+
+```text
+~/.local/state/omarchy/display-scanlines/preset
+```
+
+While enabled, login and `hyprctl reload` persistence is provided by:
 
 ```text
 ~/.local/state/omarchy/toggles/hypr/zz-display-scanlines.lua
 ```
 
-Generated shaders live under:
+Turning power off removes that toggle module but keeps the preset file. Generated shaders also live beneath `~/.local/state/omarchy/display-scanlines/`.
 
-```text
-~/.local/state/omarchy/display-scanlines/
-```
-
-The two presets share one source body, `shaders/crt.body.glsl`. The CLI prepends `CRT_LEVEL` and rebuilds the active generated shader whenever a preset is selected. Do not edit generated files.
+The two presets share one source body, `shaders/crt.body.glsl`. The CLI prepends `CRT_LEVEL` and rebuilds the selected generated shader whenever needed. Do not edit generated files.
 
 ## Remove
 

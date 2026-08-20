@@ -13,18 +13,17 @@ Panel {
   manageIpc: false
 
   // ---- CRT shader state ----------------------------------------------------
-  // `crtLevel` is the optimistic value: it moves the instant a pill is clicked
-  // so the selection lights up immediately, then the status re-read confirms
-  // it. `crtBusy` swallows further clicks while the hyprctl round-trip is in
-  // flight without dimming hover/cursor styling.
-  readonly property var crtLevels: ["off", "light", "heavy"]
-  property string crtLevel: "off"
+  // Power and preset are deliberately independent. The toggle owns enabled
+  // state; Light/Heavy remains selected while off and is restored next time
+  // power turns on. Both values update optimistically, then the CLI status
+  // re-read confirms them after the Hyprland round-trip.
+  readonly property var crtPresets: ["light", "heavy"]
+  property string crtLevel: "light"
+  property bool crtEnabled: false
   property bool crtBusy: false
-  readonly property bool crtEnabled: crtLevel !== "off"
 
-  // Which pill the keyboard cursor sits on within the CRT row. Kept separate
-  // from `selectedIndex` so moving the cursor along the row never implies a
-  // selection change — same split the network panel uses for its DNS pills.
+  // Cursor index within the three equal cells: 0 = power toggle, 1 = Light,
+  // 2 = Heavy. Separate from selectedIndex because this is one horizontal row.
   property int crtIndex: 0
 
   readonly property string crtCli: {
@@ -165,12 +164,12 @@ Panel {
     selectedIndex = next
   }
 
-  // h/l along the CRT pill row. Moves the cursor only; Enter commits, matching
-  // how the network panel's DNS pills behave.
+  // h/l along the CRT controls. Moves the cursor only; Enter commits, matching
+  // how the network panel's DNS controls behave.
   function moveCrtCursor(delta) {
     var next = root.crtIndex + delta
     if (next < 0) next = 0
-    if (next > root.crtLevels.length - 1) next = root.crtLevels.length - 1
+    if (next > root.crtPresets.length) next = root.crtPresets.length
     root.crtIndex = next
   }
 
@@ -182,7 +181,8 @@ Panel {
 
   function activateCursor() {
     if (focusSection === "crt") {
-      setCrtLevel(root.crtLevels[root.crtIndex])
+      if (root.crtIndex === 0) root.toggleCrt()
+      else root.setCrtLevel(root.crtPresets[root.crtIndex - 1])
       return
     }
     if (focusSection === "scale" && selectedIndex >= 0 && selectedIndex < scaleValues.length) {
@@ -268,12 +268,14 @@ Panel {
     function show() { root.open() }
     function hide() { root.close() }
 
-    // Let SUPER-bound keys and scripts drive CRT mode without opening the
-    // panel. Accepts a level name, or "cycle" to step through them.
+    // Drive power or preset without opening the panel. Toggle never changes
+    // the selected Light/Heavy preset.
     function crt(action: string): string {
-      if (action === "cycle" || action === "toggle" || action === "") root.cycleCrt()
+      if (action === "on") root.setCrtEnabled(true)
+      else if (action === "off") root.setCrtEnabled(false)
+      else if (action === "toggle" || action === "cycle" || action === "") root.toggleCrt()
       else root.setCrtLevel(action)
-      return root.crtLevel
+      return (root.crtEnabled ? "on:" : "off:") + root.crtLevel
     }
   }
 
@@ -289,19 +291,26 @@ Panel {
     crtStatusProc.running = true
   }
 
-  function setCrtLevel(level) {
-    if (crtBusy) return
-    if (root.crtLevels.indexOf(level) < 0) return
+  function setCrtEnabled(enabled) {
+    if (root.crtBusy) return
     root.crtBusy = true
-    root.crtLevel = level        // optimistic: light the pill now
-    root.crtIndex = root.crtLevels.indexOf(level)
-    crtActionProc.command = [root.crtCli, level]
+    root.crtEnabled = enabled    // optimistic: throw the switch now
+    crtActionProc.command = [root.crtCli, enabled ? "on" : "off"]
     crtActionProc.running = true
   }
 
-  function cycleCrt() {
-    var i = root.crtLevels.indexOf(root.crtLevel)
-    setCrtLevel(root.crtLevels[(i + 1) % root.crtLevels.length])
+  function toggleCrt() {
+    setCrtEnabled(!root.crtEnabled)
+  }
+
+  function setCrtLevel(level) {
+    if (root.crtBusy) return
+    if (root.crtPresets.indexOf(level) < 0) return
+    root.crtBusy = true
+    root.crtLevel = level        // optimistic: select the pill now
+    root.crtIndex = root.crtPresets.indexOf(level) + 1
+    crtActionProc.command = [root.crtCli, level]
+    crtActionProc.running = true
   }
 
   // Human-readable summary of what the shader is doing on the focused display.
@@ -309,17 +318,17 @@ Panel {
   // pitch actually in use rather than a guess. All levels share one pitch, so
   // this varies with the display only.
   function crtDetail() {
-    if (!root.crtEnabled) return "No scanlines · shader off"
-
     for (var i = 0; i < displays.length; i++) {
       var d = displays[i]
       if (d && d.focused && d.height > 0) {
         var pitch = Model.scanlinePitch(d.height)
         var lines = Math.floor(d.height / pitch)
-        return lines + " lines · " + pitch + "px pitch · " + d.width + "×" + d.height
+        var geometry = lines + " lines · " + pitch + "px pitch · " + d.width + "×" + d.height
+        if (root.crtEnabled) return geometry
+        return "Off · " + root.crtLevel.charAt(0).toUpperCase() + root.crtLevel.slice(1) + " saved · " + geometry
       }
     }
-    return "On"
+    return root.crtEnabled ? "On" : "Off · " + root.crtLevel + " saved"
   }
 
   function setBrightness(value) {
@@ -457,14 +466,8 @@ Panel {
     }
   }
 
-  // Entering the CRT row should land the cursor on the active level rather
-  // than wherever it was last left.
-  onFocusSectionChanged: {
-    if (focusSection === "crt") {
-      var i = root.crtLevels.indexOf(root.crtLevel)
-      if (i >= 0) root.crtIndex = i
-    }
-  }
+  // Entering the CRT row lands on power first; h/l then reaches Light/Heavy.
+  onFocusSectionChanged: if (focusSection === "crt") root.crtIndex = 0
 
   onBrightnessAvailableChanged: clampCursor()
   onDisplaysChanged: clampCursor()
@@ -542,13 +545,12 @@ Panel {
       onStreamFinished: {
         try {
           var parsed = JSON.parse(String(text || "{}"))
-          // Don't clobber the optimistic value while a change is in flight.
-          // "medium" was removed; a session still on it reads as heavy so the
-          // row highlights a pill that actually exists.
+          // Don't clobber optimistic power/preset while a change is in flight.
+          // "medium" was removed; stale state migrates to Heavy.
           var lvl = parsed.level === "medium" ? "heavy" : parsed.level
-          if (!root.crtBusy && lvl && root.crtLevels.indexOf(lvl) >= 0) {
+          if (!root.crtBusy && lvl && root.crtPresets.indexOf(lvl) >= 0) {
             root.crtLevel = lvl
-            root.crtIndex = root.crtLevels.indexOf(lvl)
+            root.crtEnabled = parsed.enabled === true
           }
         } catch (e) {
           // Malformed output: leave the last known state alone.
@@ -991,28 +993,49 @@ Panel {
               }
             }
 
-            // Level pills, laid out exactly like the network panel's DNS
-            // provider row: one equal-width Button per option, `active` marking
-            // the current value and `hasCursor` the keyboard cursor.
+            // Three equal cells: the exact bare ToggleSwitch used by the Wi-Fi
+            // panel occupies the former Off position, followed by Light and
+            // Heavy pills. Preset pills stay active while power is off.
             Row {
               id: crtLevelRow
               width: parent.width
               spacing: Style.space(6)
 
-              readonly property int count: root.crtLevels.length
+              readonly property int count: 3
               readonly property real cellWidth: (width - spacing * (count - 1)) / count
 
-              Repeater {
-                model: root.crtLevels
+              Item {
+                width: crtLevelRow.cellWidth
+                height: lightPill.implicitHeight
 
-                CrtLevelPill {
-                  required property string modelData
-                  required property int index
-
-                  level: modelData
-                  levelIndex: index
-                  width: crtLevelRow.cellWidth
+                ToggleSwitch {
+                  id: crtPowerSwitch
+                  anchors.centerIn: parent
+                  checked: root.crtEnabled
+                  busy: root.crtBusy
+                  hasCursor: root.cursorActive && root.focusSection === "crt" && root.crtIndex === 0
+                  foreground: root.bar.foreground
+                  onHovered: function(on) {
+                    if (!on) return
+                    root.cursorActive = true
+                    root.focusSection = "crt"
+                    root.crtIndex = 0
+                  }
+                  onToggled: root.toggleCrt()
                 }
+              }
+
+              CrtLevelPill {
+                id: lightPill
+                level: "light"
+                levelIndex: 1
+                width: crtLevelRow.cellWidth
+              }
+
+              CrtLevelPill {
+                level: "heavy"
+                levelIndex: 2
+                width: crtLevelRow.cellWidth
               }
             }
 
@@ -1037,15 +1060,14 @@ Panel {
     }
   }
 
-  // One CRT level pill. Mirrors the network panel's DnsProviderPill: the
-  // cursor and current-selection visuals come entirely from Button, and this
-  // component only binds them to panel state and renders the label.
+  // One CRT preset pill. Mirrors the network panel's DnsProviderPill: the
+  // cursor and current-selection visuals come entirely from Button. `active`
+  // depends only on preset, never power, so selection persists while off.
   component CrtLevelPill: Button {
     id: crtPill
     required property string level
     required property int levelIndex
 
-    // "off" -> "Off", "light" -> "Light", ...
     text: level.charAt(0).toUpperCase() + level.slice(1)
     fontSize: Style.font.bodySmall
     foreground: root.bar.foreground
